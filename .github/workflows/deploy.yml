@@ -1,27 +1,15 @@
-name: Deploy to Staging
+name: Deploy to Staging (Laravel)
 
 on:
   push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+    branches: [ "main" ]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
-
-      - name: Run Tests
-        run: |
-          echo "Running tests..."
-          echo "Tests passed!"
-
-      - name: Deploy to Staging Server
+      - name: Deploy via SSH
         uses: appleboy/ssh-action@master
         with:
           host: 103.142.69.163
@@ -29,18 +17,80 @@ jobs:
           username: misl
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            mkdir -p /home/misl/tourism-website
-            cd /home/misl/tourism-website
-            rm -rf *
-            cd /tmp
-            git clone https://github.com/imNHK07/laravel.git temp-repo
-            cp -r temp-repo/* /home/misl/tourism-website/
-            rm -rf temp-repo
-            cd /home/misl/tourism-website
-            chmod -R 755 .
-            echo "Deployment completed!"
+            set -e
 
-      - name: Health Check
-        run: |
-          sleep 5
-          echo "Health check passed!"
+            APP_DIR="/home/misl/tourism-website"
+            REPO_URL="https://github.com/imNHK07/Test.git"
+
+            echo "==> Ensure app dir exists"
+            mkdir -p "$APP_DIR"
+
+            echo "==> Deploy code (preserve .env, storage, vendor)"
+            cd "$APP_DIR"
+
+            # First time deploy: clone into existing directory
+            if [ ! -d ".git" ]; then
+              echo "No git repo found. Initial clone..."
+              git clone "$REPO_URL" .
+            else
+              echo "Repo exists. Pull latest..."
+              git fetch --all
+              git reset --hard origin/main
+            fi
+
+            echo "==> Make sure .env exists (DO NOT overwrite existing .env)"
+            if [ ! -f ".env" ]; then
+              echo "Creating minimal .env (no .env.example found)..."
+              cat > .env <<'EOF'
+            APP_NAME=Laravel
+            APP_ENV=production
+            APP_KEY=
+            APP_DEBUG=false
+            APP_URL=http://103.142.69.163
+
+            LOG_CHANNEL=stack
+            LOG_LEVEL=debug
+
+            DB_CONNECTION=mysql
+            DB_HOST=127.0.0.1
+            DB_PORT=3306
+            DB_DATABASE=laravel
+            DB_USERNAME=root
+            DB_PASSWORD=
+
+            CACHE_DRIVER=file
+            SESSION_DRIVER=file
+            QUEUE_CONNECTION=sync
+            EOF
+            fi
+
+            echo "==> Install PHP dependencies"
+            composer install --no-dev -o
+
+            echo "==> Fix Laravel writable directories"
+            mkdir -p storage/framework/{cache,sessions,views}
+            mkdir -p storage/logs
+
+            # IMPORTANT: Nginx/PHP-FPM writes as www-data, you run as misl
+            sudo chown -R www-data:misl storage bootstrap/cache
+            sudo chmod -R 775 storage bootstrap/cache
+
+            echo "==> Generate APP_KEY if missing"
+            if ! grep -q "^APP_KEY=base64:" .env; then
+              php artisan key:generate --force
+            fi
+
+            echo "==> Laravel caches"
+            php artisan config:clear || true
+            php artisan cache:clear || true
+            php artisan config:cache
+            php artisan route:cache || true
+            php artisan view:cache || true
+
+            echo "==> Restart services"
+            sudo systemctl restart php8.1-fpm
+            sudo systemctl reload nginx
+
+            echo "==> Health check"
+            curl -I --max-time 10 http://103.142.69.163 | head -n 5
+            echo "✅ Deployment completed!"
