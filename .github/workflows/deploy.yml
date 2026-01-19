@@ -21,26 +21,34 @@ jobs:
 
             APP_DIR="/home/misl/tourism-website"
             REPO_URL="https://github.com/imNHK07/Test.git"
+            TMP_DIR="/tmp/tourism-deploy-$$"
 
             echo "==> Ensure app dir exists"
             mkdir -p "$APP_DIR"
 
-            echo "==> Deploy code (preserve .env, storage, vendor)"
-            cd "$APP_DIR"
+            echo "==> Clone repo into temp"
+            rm -rf "$TMP_DIR"
+            git clone "$REPO_URL" "$TMP_DIR"
 
-            # First time deploy: clone into existing directory
-            if [ ! -d ".git" ]; then
-              echo "No git repo found. Initial clone..."
-              git clone "$REPO_URL" .
-            else
-              echo "Repo exists. Pull latest..."
-              git fetch --all
-              git reset --hard origin/main
+            echo "==> Sync code into app dir (preserve .env)"
+            # Install rsync if missing
+            if ! command -v rsync >/dev/null 2>&1; then
+              sudo apt-get update
+              sudo apt-get install -y rsync
             fi
 
-            echo "==> Make sure .env exists (DO NOT overwrite existing .env)"
+            # Copy everything EXCEPT .env (so existing server .env stays)
+            rsync -a --delete \
+              --exclude ".env" \
+              "$TMP_DIR/" "$APP_DIR/"
+
+            echo "==> Cleanup temp"
+            rm -rf "$TMP_DIR"
+
+            cd "$APP_DIR"
+
+            echo "==> Ensure .env exists"
             if [ ! -f ".env" ]; then
-              echo "Creating minimal .env (no .env.example found)..."
               cat > .env <<'EOF'
             APP_NAME=Laravel
             APP_ENV=production
@@ -67,11 +75,9 @@ jobs:
             echo "==> Install PHP dependencies"
             composer install --no-dev -o
 
-            echo "==> Fix Laravel writable directories"
+            echo "==> Fix writable dirs"
             mkdir -p storage/framework/{cache,sessions,views}
             mkdir -p storage/logs
-
-            # IMPORTANT: Nginx/PHP-FPM writes as www-data, you run as misl
             sudo chown -R www-data:misl storage bootstrap/cache
             sudo chmod -R 775 storage bootstrap/cache
 
@@ -80,7 +86,7 @@ jobs:
               php artisan key:generate --force
             fi
 
-            echo "==> Laravel caches"
+            echo "==> Cache"
             php artisan config:clear || true
             php artisan cache:clear || true
             php artisan config:cache
