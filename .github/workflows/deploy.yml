@@ -29,14 +29,14 @@ jobs:
           username: misl
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
-            mkdir -p /home/misl/website
-            cd /home/misl/website
+            mkdir -p /home/misl/tourism-website
+            cd /home/misl/tourism-website
             rm -rf *
             cd /tmp
             git clone https://github.com/imNHK07/laravel.git temp-repo
-            cp -r temp-repo/* /home/misl/website/
+            cp -r temp-repo/* /home/misl/tourism-website/
             rm -rf temp-repo
-            cd /home/misl/website
+            cd /home/misl/tourism-website
             chmod -R 755 .
             echo "Deployment completed!"
 
