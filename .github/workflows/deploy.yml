@@ -1,102 +1,77 @@
-name: Deploy to Staging (Laravel)
+name: Deploy Laravel to Server
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy via SSH
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.0'
+          extensions: mbstring, xml, bcmath, gd, zip
+
+      - name: Install Composer Dependencies
+        run: composer install --no-dev --optimize-autoloader --no-interaction
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+
+      - name: Install & Build NPM Assets
+        run: |
+          npm install
+          npm run prod
+
+      - name: Deploy to Server via SSH
         uses: appleboy/ssh-action@master
         with:
-          host: 103.142.69.163
-          port: 4345
-          username: misl
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          host: ${{ secrets.SSH_HOST }}
+          port: ${{ secrets.SSH_PORT }}
+          username: ${{ secrets.SSH_USERNAME }}
+          password: ${{ secrets.SSH_PASSWORD }}
           script: |
-            set -e
-
-            APP_DIR="/home/misl/tourism-website"
-            REPO_URL="https://github.com/imNHK07/Test.git"
-            TMP_DIR="/tmp/tourism-deploy-$$"
-
-            echo "==> Ensure app dir exists"
-            mkdir -p "$APP_DIR"
-
-            echo "==> Clone repo into temp"
-            rm -rf "$TMP_DIR"
-            git clone "$REPO_URL" "$TMP_DIR"
-
-            echo "==> Sync code into app dir (preserve .env)"
-            # Install rsync if missing
-            if ! command -v rsync >/dev/null 2>&1; then
-              sudo apt-get update
-              sudo apt-get install -y rsync
+            mkdir -p /home/misl/website
+            cd /home/misl/website
+            # Use git fetch/reset for efficient updates or rsync if preferred. 
+            # Here we follow the requested repo link.
+            if [ ! -d ".git" ]; then
+              git clone https://github.com/imNHK07/laravel.git .
+            else
+              git fetch origin main
+              git reset --hard origin/main
             fi
-
-            # Copy everything EXCEPT .env (so existing server .env stays)
-            rsync -a --delete \
-              --exclude ".env" \
-              "$TMP_DIR/" "$APP_DIR/"
-
-            echo "==> Cleanup temp"
-            rm -rf "$TMP_DIR"
-
-            cd "$APP_DIR"
-
-            echo "==> Ensure .env exists"
-            if [ ! -f ".env" ]; then
-              cat > .env <<'EOF'
-            APP_NAME=Laravel
-            APP_ENV=production
-            APP_KEY=
-            APP_DEBUG=false
-            APP_URL=http://103.142.69.163
-
-            LOG_CHANNEL=stack
-            LOG_LEVEL=debug
-
-            DB_CONNECTION=mysql
-            DB_HOST=127.0.0.1
-            DB_PORT=3306
-            DB_DATABASE=laravel
-            DB_USERNAME=root
-            DB_PASSWORD=
-
-            CACHE_DRIVER=file
-            SESSION_DRIVER=file
-            QUEUE_CONNECTION=sync
-            EOF
-            fi
-
-            echo "==> Install PHP dependencies"
-            composer install --no-dev -o
-
-            echo "==> Fix writable dirs"
-            mkdir -p storage/framework/{cache,sessions,views}
-            mkdir -p storage/logs
-            sudo chown -R www-data:misl storage bootstrap/cache
-            sudo chmod -R 775 storage bootstrap/cache
-
-            echo "==> Generate APP_KEY if missing"
-            if ! grep -q "^APP_KEY=base64:" .env; then
-              php artisan key:generate --force
-            fi
-
-            echo "==> Cache"
-            php artisan config:clear || true
-            php artisan cache:clear || true
+            
+            # Maintenance mode
+            php artisan down || true
+            
+            # Install dependencies on server (if not fully synced via rsync)
+            composer install --no-dev --optimize-autoloader
+            
+            # Run migrations
+            php artisan migrate --force
+            
+            # Cache config and routes
             php artisan config:cache
-            php artisan route:cache || true
-            php artisan view:cache || true
-
-            echo "==> Restart services"
-            sudo systemctl restart php8.1-fpm
-            sudo systemctl reload nginx
-
-            echo "==> Health check"
-            curl -I --max-time 10 http://103.142.69.163 | head -n 5
-            echo "✅ Deployment completed!"
+            php artisan route:cache
+            php artisan view:cache
+            
+            # Set permissions
+            chmod -R 775 storage bootstrap/cache
+            
+            # Bring back up
+            php artisan up
+            
+            echo "Deployment completed successfully!"
